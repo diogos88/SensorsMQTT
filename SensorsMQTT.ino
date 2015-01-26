@@ -21,18 +21,18 @@
 // Communication //
 ///////////////////
 #define ENABLE_SERIAL
-//#define ENABLE_MQTT_CLIENT // MQTT protocol v3.1
-#define ENABLE_DISPLAY
+#define ENABLE_MQTT_CLIENT // MQTT protocol v3.1
+//#define ENABLE_DISPLAY
 
 ///////////////////
 //    Sensors    //
 ///////////////////
 #define ENABLE_TEMPERATURE_HUMIDITY_SENSOR
-#define ENABLE_DISTANCE_SENSOR
-#define ENABLE_MOTION_SENSOR
-#define ENABLE_ROTARY_ENCODER
-#define ENABLE_GAS_SENSOR
-#define ENABLE_SOIL_MOISTURE_SENSOR
+//#define ENABLE_DISTANCE_SENSOR
+//#define ENABLE_MOTION_SENSOR
+//#define ENABLE_ROTARY_ENCODER
+//#define ENABLE_GAS_SENSOR
+//#define ENABLE_SOIL_MOISTURE_SENSOR
 
 ///////////////////
 //      Pins     //
@@ -54,11 +54,9 @@
 #pragma endregion
 
 #pragma region include and declare
-#include <Thread.h>
-#include <ThreadController.h>
-ThreadController m_threadController = ThreadController();
 
-String m_baseTopic("/home/bedroom/");
+char* m_baseTopic = "/home/bedroom/";
+char m_topicBuf[32], m_messageBuf[8];
 
 #ifdef ENABLE_MQTT_CLIENT
 #include <SPI.h>
@@ -66,7 +64,7 @@ String m_baseTopic("/home/bedroom/");
 #include <PubSubClient.h>
 
 byte m_mac[] = { 0xDE, 0xED, 0xBA, 0xFE, 0xFE, 0xED };
-byte m_server[] = { 192, 168, 2, 46 };
+byte m_server[] = { 192, 168, 2, 19 };
 
 EthernetClient m_ethClient;
 PubSubClient m_mqttClient(m_server, 1883, mqttNotificationCallback, m_ethClient);
@@ -74,27 +72,39 @@ PubSubClient m_mqttClient(m_server, 1883, mqttNotificationCallback, m_ethClient)
 
 #ifdef ENABLE_TEMPERATURE_HUMIDITY_SENSOR
 #include <SPI.h>
-#include <DHT.h>  
+#include <DHT.h>
+#define DELAY_TEMPERATURE_HUMIDITY_SENSOR 10000
+
 DHT m_dht;
+unsigned long m_timeTemperatureHumiditySensor;
 float m_temperature, m_humidity;
 #endif
 
 #ifdef ENABLE_DISTANCE_SENSOR
 #include <SPI.h>
-#include <NewPing.h>  
+#include <NewPing.h>
+#define DELAY_DISTANCE_SENSOR 200
+
 const long MAX_DISTANCE = 300;
+unsigned long m_timeDistanceSensor;
 NewPing m_Sonar(DIGITAL_PIN_DISTANCE_SENSOR_TRIGGER, DIGITAL_PIN_DISTANCE_SENSOR_ECHO, MAX_DISTANCE);
 unsigned int m_distance;
 #endif
 
 #ifdef ENABLE_MOTION_SENSOR
+#define DELAY_MOTION_SENSOR 500
+
 bool m_motionTripped;
+unsigned long m_timeMotionSensor;
 #endif
 
 #ifdef ENABLE_ROTARY_ENCODER
+#define DELAY_ROTARY_ENCODER 10
+
 volatile int m_encoderPos = 0;
 int m_lastReportedPos = 1;
 static boolean m_rotating = false;
+unsigned long m_timeRotaryEncoder;
 
 boolean m_InterruptASet = false;
 boolean m_InterruptBSet = false;
@@ -102,54 +112,63 @@ boolean m_InterruptBSet = false;
 
 #ifdef ENABLE_DISPLAY
 #include "U8glib.h"
+#define DELAY_DISPLAY 50
 U8GLIB_SSD1306_128X64 m_display(U8G_I2C_OPT_NO_ACK);
+unsigned long m_timeDisplay;
 #endif
 
 #ifdef ENABLE_GAS_SENSOR
-#define         RL_VALUE                     5     //define the load resistance on the board, in kilo ohms
-#define         RO_CLEAN_AIR_FACTOR          9.83  //RO_CLEAR_AIR_FACTOR=(Sensor resistance in clean air)/RO, which is derived from the chart in datasheet
-#define         CALIBARAION_SAMPLE_TIMES     50    //define how many samples you are going to take in the calibration phase
-#define         CALIBRATION_SAMPLE_INTERVAL  500   //define the time interal(in milisecond) between each samples in the
-#define         READ_SAMPLE_INTERVAL         50    //define how many samples you are going to take in normal operation
-#define         READ_SAMPLE_TIMES            5     //define the time interal(in milisecond) between each samples in 
-#define         GAS_LPG                      0
-#define         GAS_CO                       1
-#define         GAS_SMOKE                    2
+#define RL_VALUE                     5     //define the load resistance on the board, in kilo ohms
+#define RO_CLEAN_AIR_FACTOR          9.83  //RO_CLEAR_AIR_FACTOR=(Sensor resistance in clean air)/RO, which is derived from the chart in datasheet
+#define CALIBARAION_SAMPLE_TIMES     50    //define how many samples you are going to take in the calibration phase
+#define CALIBRATION_SAMPLE_INTERVAL  500   //define the time interal(in milisecond) between each samples in the
+#define READ_SAMPLE_INTERVAL         50    //define how many samples you are going to take in normal operation
+#define READ_SAMPLE_TIMES            5     //define the time interal(in milisecond) between each samples in 
+#define GAS_LPG                      0
+#define GAS_CO                       1
+#define GAS_SMOKE                    2
+#define DELAY_GAS_SENSOR 50
 
 float m_Ro = 10000.0;
 
 float m_LPGCurve[3] = { 2.3, 0.21, -0.47 };
 float m_COCurve[3] = { 2.3, 0.72, -0.34 };
 float m_smokeCurve[3] = { 2.3, 0.53, -0.44 };
+
+unsigned long m_timeGasSensor;
 #endif
 
 #ifdef ENABLE_SOIL_MOISTURE_SENSOR
+#define DELAY_SOIL_MOISTURE_SENSOR 1000
+
 bool m_soilMoistureTripped;
+unsigned long m_timeSoilMoistureSensor;
 #endif
 
 #pragma endregion
 
 #pragma region functions
 
-void send(String topic, String msg) {
+void send(char* topic, char* msg) {
 #ifdef ENABLE_SERIAL
+
    Serial.print(millis());
-   Serial.println(" - " + topic + " " + msg);
+   Serial.print(" - ");
+   Serial.print(topic);
+   Serial.print(" ");
+   Serial.println(msg);
    delay(10);
+
 #endif
 
 #ifdef ENABLE_MQTT_CLIENT
-   if (!m_mqttClient.connected()) {
+
+   if (!m_mqttClient.connected())
       reconnectMQTTClient();
-   }
 
-   char *topicBuf = new char[topic.length() + 1];
-   strcpy(topicBuf, topic.c_str());
+   if (m_mqttClient.connected())
+      m_mqttClient.publish(topic, msg);
 
-   char *msgBuf = new char[msg.length() + 1];
-   strcpy(msgBuf, msg.c_str());
-
-   m_mqttClient.publish(topicBuf, msgBuf);
 #endif
 }
 
@@ -206,7 +225,7 @@ void draw() {
    Ypos += 16;
 
 #ifdef ENABLE_MOTION_SENSOR
-   String motion = String("Motion: ") + String((m_motionTripped)? "true":"false");
+   String motion = String("Motion: ") + String((m_motionTripped) ? "true" : "false");
    char motionBuf[15];
    motion.toCharArray(motionBuf, 15);
 
@@ -227,7 +246,8 @@ long getDecimal(float val, int precision) {
 }
 
 #ifdef ENABLE_MQTT_CLIENT
-void getConnection() {
+void connectEthernet() {
+   Serial.println("STATUS: connect ethernet");
    while (Ethernet.begin(m_mac) != 1)
    {
       Serial.println("ERROR: Cannot receive an IP address from DHCP server");
@@ -239,26 +259,29 @@ void getConnection() {
 }
 
 void reconnectMQTTClient() {
+   Serial.println("ERROR: MQTT reconnect");
    m_mqttClient.disconnect();
    delay(3000);
    connectMQTTClient();
 }
 
 void connectMQTTClient() {
-   String ip(Ethernet.localIP());
-   char ipBuf[16];
-   ip.toCharArray(ipBuf, 16);
+   Serial.println("STATUS: connect MQTT client");
+
+   char ipBuf[24];
+   sprintf(ipBuf, "arduino%d.%d.%d.%d", Ethernet.localIP()[0], Ethernet.localIP()[1], Ethernet.localIP()[2], Ethernet.localIP()[3]);
+
+   Serial.print("MQTT name = ");
+   Serial.println(ipBuf);
 
    while (m_mqttClient.connect(ipBuf) != 1)
    {
       Serial.println("ERROR: Cannot connect to MQTT server");
-      delay(5000);
+      delay(3000);
    }
 
-   char *cstr = new char[m_baseTopic.length() + 1];
-   strcpy(cstr, m_baseTopic.c_str());
-   m_mqttClient.publish(cstr, "device ready");
-   delete cstr;
+   Serial.println("MQTT: device ready");
+   m_mqttClient.publish(m_baseTopic, "device ready");
 
    //String subscribeTopic = m_baseTopic + String("#");
    //cstr = new char[subscribeTopic.length() + 1];
@@ -348,68 +371,122 @@ void mqttNotificationCallback(char* topic, byte* payload, unsigned int length) {
 
 void temperatureHumiditySensorCallback(){
 #ifdef ENABLE_TEMPERATURE_HUMIDITY_SENSOR
-   m_temperature = m_dht.getTemperature();
-   String temperature(m_temperature);
-   send(m_baseTopic + "temperature", temperature);
+   if (m_timeTemperatureHumiditySensor < millis()) {
+   
+      m_temperature = m_dht.getTemperature();
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "temperature");
+      dtostrf(m_temperature, 4, 2, m_messageBuf);
+      send(m_topicBuf, m_messageBuf);
 
-   m_humidity = m_dht.getHumidity();
-   String humidity(m_humidity);
-   send(m_baseTopic + "humidity", humidity);
+      m_humidity = m_dht.getHumidity();
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "humidity");
+      dtostrf(m_humidity, 4, 2, m_messageBuf);
+      send(m_topicBuf, m_messageBuf);
+
+      m_timeTemperatureHumiditySensor = millis() + DELAY_TEMPERATURE_HUMIDITY_SENSOR;
+   }
 #endif
 }
 
 void distanceSensorCallback() {
 #ifdef ENABLE_DISTANCE_SENSOR
-   m_distance = m_Sonar.ping_cm();
-   String distance(m_distance);
-   send(m_baseTopic + "distance", distance);
+   if (m_timeDistanceSensor < millis()) {
+      
+      m_distance = m_Sonar.ping_cm();
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "distance");
+      sprintf(m_messageBuf, "%d", m_distance);
+      send(m_topicBuf, m_messageBuf);
+
+      m_timeDistanceSensor = millis() + DELAY_DISTANCE_SENSOR;
+   }
 #endif
 }
 
 void motionSensorCallback() {
 #ifdef ENABLE_MOTION_SENSOR
-   m_motionTripped = digitalRead(DIGITAL_PIN_MOTION_SENSOR);
-   String tripped((m_motionTripped == HIGH) ? "true" : "false");
-   send(m_baseTopic + "motion", tripped);
+   if (m_timeMotionSensor < millis()) {
+      
+      m_motionTripped = digitalRead(DIGITAL_PIN_MOTION_SENSOR);
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "distance");
+      sprintf(m_messageBuf, "%s", (m_motionTripped == HIGH) ? "true" : "false");
+      send(m_topicBuf, m_messageBuf);
+      
+      m_timeMotionSensor = millis() + DELAY_MOTION_SENSOR;
+   }
 #endif
 }
 
 void rotaryEncoderCallback() {
 #ifdef ENABLE_ROTARY_ENCODER
-   m_rotating = true;
+   if (m_timeRotaryEncoder < millis()) {
 
-   if (m_lastReportedPos != m_encoderPos) {
-      m_lastReportedPos = m_encoderPos;
-      send(m_baseTopic + "volume", String(m_encoderPos));
-   }
-   if (digitalRead(DIGITAL_PIN_ROTARY_ENCODER_SW) == LOW)  {
-      m_encoderPos = 0;
+      m_rotating = true;
+
+      if (m_lastReportedPos != m_encoderPos) {
+         m_lastReportedPos = m_encoderPos;
+
+         
+
+         m_motionTripped = digitalRead(DIGITAL_PIN_MOTION_SENSOR);
+         sprintf(m_topicBuf, "%s%s", m_baseTopic, "volume");
+         sprintf(m_messageBuf, "%d", m_encoderPos);
+         send(m_topicBuf, m_messageBuf);
+      }
+      if (digitalRead(DIGITAL_PIN_ROTARY_ENCODER_SW) == LOW)  {
+         m_encoderPos = 0;
+      }
+
+      m_timeRotaryEncoder = millis() + DELAY_ROTARY_ENCODER;
    }
 #endif
 }
 
 void displayCallback() {
 #ifdef ENABLE_DISPLAY
-   m_display.firstPage();
-   do {
-      draw();
-   } while (m_display.nextPage());
+   if (m_timeDisplay < millis()) {
+
+      m_display.firstPage();
+      do {
+         draw();
+      } while (m_display.nextPage());
+
+      m_timeDisplay = millis() + DELAY_DISPLAY;
+   }
 #endif
 }
 
 void gasSensorCallback() {
 #ifdef ENABLE_GAS_SENSOR
-   send(m_baseTopic + "LPG", String(MQGetGasPercentage(MQRead(ANALOG_PIN_GAS_SENSOR) / m_Ro, GAS_LPG), DEC));
-   send(m_baseTopic + "CO", String(MQGetGasPercentage(MQRead(ANALOG_PIN_GAS_SENSOR) / m_Ro, GAS_CO), DEC));
-   send(m_baseTopic + "SMOKE", String(MQGetGasPercentage(MQRead(ANALOG_PIN_GAS_SENSOR) / m_Ro, GAS_SMOKE), DEC));
+   if (m_timeGasSensor < millis()) {
+            
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "lpg");
+      sprintf(m_messageBuf, "%d", MQGetGasPercentage(MQRead(ANALOG_PIN_GAS_SENSOR) / m_Ro, GAS_LPG));
+      send(m_topicBuf, m_messageBuf);
+
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "co");
+      sprintf(m_messageBuf, "%d", MQGetGasPercentage(MQRead(ANALOG_PIN_GAS_SENSOR) / m_Ro, GAS_CO));
+      send(m_topicBuf, m_messageBuf);
+
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "smoke");
+      sprintf(m_messageBuf, "%d", MQGetGasPercentage(MQRead(ANALOG_PIN_GAS_SENSOR) / m_Ro, GAS_SMOKE));
+      send(m_topicBuf, m_messageBuf);
+
+      m_timeGasSensor = millis() + DELAY_GAS_SENSOR;
+   }
 #endif
 }
 
 void soilMoistureSensorCallback() {
 #ifdef ENABLE_SOIL_MOISTURE_SENSOR
-   m_soilMoistureTripped = (digitalRead(DIGITAL_PIN_SOIL_MOISTURE_SENSOR) == HIGH);
-   String tripped((m_soilMoistureTripped) ? "false" : "true");
-   send(m_baseTopic + "soilmoisture", tripped);
+   if (m_timeSoilMoistureSensor < millis()) {
+            
+      m_soilMoistureTripped = (digitalRead(DIGITAL_PIN_SOIL_MOISTURE_SENSOR) == HIGH);
+      sprintf(m_topicBuf, "%s%s", m_baseTopic, "lpg");
+      sprintf(m_messageBuf, "%s", (m_soilMoistureTripped) ? "false" : "true");
+      send(m_topicBuf, m_messageBuf);
+
+      m_timeSoilMoistureSensor = millis() + DELAY_SOIL_MOISTURE_SENSOR;
+   }
 #endif
 }
 
@@ -502,25 +579,14 @@ void setupSerial() {
 
 void setupMQTTClient() {
 #ifdef ENABLE_MQTT_CLIENT
-   getConnection();
+   connectEthernet();
    connectMQTTClient();
-
-   Thread* threadMQTTClient = new Thread();
-   threadMQTTClient->onRun(mqttCallback);
-   threadMQTTClient->setInterval(1);
-   m_threadController.add(threadMQTTClient);
-
 #endif
 }
 
 void setupDebugLED() {
 #ifdef ENABLE_DEBUG_LED
    pinMode(DIGITAL_PIN_DEBUG_LED, OUTPUT);
-
-   Thread* threadDebugLED = new Thread();
-   threadDebugLED->onRun(debugLEDCallback);
-   threadDebugLED->setInterval(1);
-   m_threadController.add(threadDebugLED);
 #endif
 }
 
@@ -528,11 +594,6 @@ void setupTemperatureHumiditySensor() {
 #ifdef ENABLE_TEMPERATURE_HUMIDITY_SENSOR
    m_dht.setup(DIGITAL_PIN_TEMPERATURE_HUMIDITY_SENSOR);
    send("/home/global", "Temperature/Humidity sensor enabled");
-
-   Thread* threadTemperatureHumiditySensor = new Thread();
-   threadTemperatureHumiditySensor->onRun(temperatureHumiditySensorCallback);
-   threadTemperatureHumiditySensor->setInterval(900000); // 15 minutes interval
-   m_threadController.add(threadTemperatureHumiditySensor);
 #else
    send("/home/global", "Temperature/Humidity sensor disabled");
 #endif
@@ -541,10 +602,6 @@ void setupTemperatureHumiditySensor() {
 void setupMotionSensor() {
 #ifdef ENABLE_MOTION_SENSOR
    pinMode(DIGITAL_PIN_MOTION_SENSOR, INPUT);
-   Thread* threadMotionSensor = new Thread();
-   threadMotionSensor->onRun(motionSensorCallback);
-   threadMotionSensor->setInterval(250);
-   m_threadController.add(threadMotionSensor);
    send("/home/global", "Motion sensor enabled");
 #else
    send("/home/global", "Motion sensor disabled");
@@ -560,10 +617,6 @@ void setupRotaryEncoder() {
    attachInterrupt(0, doEncoderA, CHANGE);
    attachInterrupt(1, doEncoderB, CHANGE);
 
-   Thread* threadRotaryEncoder = new Thread();
-   threadRotaryEncoder->onRun(rotaryEncoderCallback);
-   threadRotaryEncoder->setInterval(1);
-   m_threadController.add(threadRotaryEncoder);
    send("/home/global", "Rotary encoder enabled");
 #else
    send("/home/global", "Rotary encoder disabled");
@@ -572,10 +625,6 @@ void setupRotaryEncoder() {
 
 void setupDistanceSensor() {
 #ifdef ENABLE_DISTANCE_SENSOR
-   Thread* threadDistanceSensor = new Thread();
-   threadDistanceSensor->onRun(distanceSensorCallback);
-   threadDistanceSensor->setInterval(500);
-   m_threadController.add(threadDistanceSensor);
    send("/home/global", "Distance sensor enabled");
 #else
    send("/home/global", "Distance sensor disabled");
@@ -599,11 +648,6 @@ void setupDisplay() {
       m_display.setHiColorByRGB(255, 255, 255);
    }
 
-   Thread* threadDisplay = new Thread();
-   threadDisplay->onRun(displayCallback);
-   threadDisplay->setInterval(50);
-   m_threadController.add(threadDisplay);
-
    send("/home/global", "Display enabled");
 #else
    send("/home/global", "Display disabled");
@@ -613,12 +657,6 @@ void setupDisplay() {
 void setupGasSensor() {
 #ifdef ENABLE_GAS_SENSOR
    m_Ro = MQCalibration(ANALOG_PIN_GAS_SENSOR);
-
-   Thread* threadGasSensor = new Thread();
-   threadGasSensor->onRun(gasSensorCallback);
-   threadGasSensor->setInterval(100);
-   m_threadController.add(threadGasSensor);
-
    send("/home/global", "Gas sensor enabled");
 #else
    send("/home/global", "Gas sensor disabled");
@@ -628,12 +666,6 @@ void setupGasSensor() {
 void setupSoilMoistureSensor() {
 #ifdef ENABLE_SOIL_MOISTURE_SENSOR
    pinMode(DIGITAL_PIN_SOIL_MOISTURE_SENSOR, INPUT);
-
-   Thread* threadSoilMoistureSensor = new Thread();
-   threadSoilMoistureSensor->onRun(soilMoistureSensorCallback);
-   threadSoilMoistureSensor->setInterval(1000);
-   m_threadController.add(threadSoilMoistureSensor);
-
    send("/home/global", "Soil moisture enabled");
 #else
    send("/home/global", "Soil moisture disabled");
@@ -649,6 +681,7 @@ int main(void) {
    setupMQTTClient();
 
    setupDisplay();
+   
    setupTemperatureHumiditySensor();
    setupMotionSensor();
    setupRotaryEncoder();
@@ -656,7 +689,15 @@ int main(void) {
    setupGasSensor();
    setupSoilMoistureSensor();
 
+
    while (1) {
-      m_threadController.run();
+      mqttCallback();
+      temperatureHumiditySensorCallback();
+      motionSensorCallback();
+      rotaryEncoderCallback();
+      distanceSensorCallback();
+      displayCallback();
+      gasSensorCallback();
+      soilMoistureSensorCallback();
    }
 }
